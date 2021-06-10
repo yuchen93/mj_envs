@@ -18,14 +18,14 @@ import click
 import glob
 import pickle
 import numpy as np
-from parse_mjl import parse_mjl_logs, viz_parsed_mjl_logs
+from vive.source.parse_mjl import parse_mjl_logs, viz_parsed_mjl_logs
 from mjrl.utils.gym_env import GymEnv
 import mj_envs
 import time as timer
-import skvideo.io
+# import skvideo.io
 import gym
 
-from tqdm import tqdm 
+from tqdm import tqdm
 
 # headless renderer
 render_buffer = []  # rendering buffer
@@ -76,8 +76,6 @@ def render_demos(env, data, filename='demo_rendering.mp4', render=None):
         env.sim.forward()
         if i_frame % render_skip == 0:
             viewer(env, mode='render', render=render)
-            obs = env.env._get_obs()
-            #print(obs)
             #print(i_frame, end=', ', flush=True)
 
     viewer(env, mode='save', filename=filename, render=render)
@@ -96,9 +94,10 @@ def gather_training_data(env, data, filename='demo_playback.mp4', render=None):
     env.reset()
     init_qpos = data['qpos'][0].copy()
     init_qvel = data['qvel'][0].copy()
-    print(dir(env))
-    act_mid = env.act_mid
-    act_rng = env.act_amp
+
+    # pick scaling for actions
+    act_mid = np.zeros(env.sim.model.nu)
+    act_rng = 2* np.ones(env.sim.model.nu)
 
     # prepare env
     env.sim.data.qpos[:] = init_qpos
@@ -108,9 +107,11 @@ def gather_training_data(env, data, filename='demo_playback.mp4', render=None):
 
     # step the env and gather data
     path_obs = None
-    ret = 0
+    path_reward = 0
+    obs = env.get_obs()
+
     for i_frame in tqdm(range(data['ctrl'].shape[0] - 1)):
-        # Reset every time step
+        # Reset every nth time step to demo state
         # if i_frame % 1 == 0:
         #     qp = data['qpos'][i_frame].copy()
         #     qv = data['qvel'][i_frame].copy()
@@ -118,20 +119,18 @@ def gather_training_data(env, data, filename='demo_playback.mp4', render=None):
         #     env.sim.data.qvel[:] = qv
         #     env.sim.forward()
 
-        obs = env._get_obs()
-
         # Construct the action
-        # ctrl = (data['qpos'][i_frame + 1][:9] - obs[:9]) / (env.skip * env.model.opt.timestep)
-        #print(obs)
-        #print(data['ctrl'])
-        #print(env.model.opt.timestep)
-        ctrl = (data['ctrl'][i_frame] - obs[:9])/(env.frame_skip*0.002) #*env.model.opt.timestep)
+        # ctrl = (data['qpos'][i_frame + 1][:9] - obs[:9]) / (env.frame_skip * env.sim.model.opt.timestep)
+        ctrl = (data['ctrl'][i_frame] - obs[:9])/(env.frame_skip*env.sim.model.opt.timestep)
         # ctrl = (data['ctrl'][i_frame] - obs[:9])/(env.model.opt.timestep)
+
+        # normalization and env stepping
         act = (ctrl - act_mid) / act_rng
         act = np.clip(act, -0.999, 0.999)
         next_obs, reward, done, env_info = env.step(act)
-        #if reward != 0: print(reward)
-        ret += reward
+        path_reward += reward
+
+        # populate path
         if path_obs is None:
             path_obs = obs
             path_act = act
@@ -142,8 +141,11 @@ def gather_training_data(env, data, filename='demo_playback.mp4', render=None):
         # render when needed to maintain FPS
         if i_frame % render_skip == 0:
             viewer(env, mode='render', render=render)
-            #print(i_frame, end=', ', flush=True)
-    print('return,',ret)
+
+        # advance time
+        obs = next_obs
+
+    print('path reward: ',path_reward)
 
     # finalize
     if render:
@@ -189,7 +191,6 @@ def main(env, demo_dir, skip, graph, save_logs, view, render):
         print("processing: " + file, end=': ')
 
         data = parse_mjl_logs(file, skip)
-        print(data.keys())
 
         print("log duration %0.2f" % (data['time'][-1] - data['time'][0]))
 
@@ -212,12 +213,12 @@ def main(env, demo_dir, skip, graph, save_logs, view, render):
 
         # playback logs and gather data
         elif view == 'playback':
-            #try:
-            obs, act,init_qpos, init_qvel = gather_training_data(gym_env, data,\
-            filename=data['logName'][:-4]+'_playback.mp4', render=render)
-            #except Exception as e:
-            #    print(e)
-            #    continue
+            try:
+                obs, act,init_qpos, init_qvel = gather_training_data(gym_env, data,\
+                filename=data['logName'][:-4]+'_playback.mp4', render=render)
+            except Exception as e:
+               print(e)
+               continue
             path = {
                 'observations': obs,
                 'actions': act,

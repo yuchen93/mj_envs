@@ -84,17 +84,7 @@ class KitchenBase(env_base.MujocoEnv):
                                 **kwargs)
 
         self.init_qpos = self.sim.model.key_qpos[0].copy()
-
-        # reposition viewer
-        # self.update_camera(azimuth=90)
-
-    def _get_obs(self):
         
-        OBS_KEYS = ['hand_jnt', 'objs_jnt', 'goal']
-        obs_dict = self.get_obs_dict(self.sim)
-        #t, obs = self.obsdict2obsvec(obs_dict, self.DEFAULT_OBS_KEYS_AND_WEIGHTS.keys())
-        t, obs = self.obsdict2obsvec(obs_dict, OBS_KEYS)
-        return obs 
 
     def get_obs_dict(self, sim):
         obs_dict = {}
@@ -105,9 +95,6 @@ class KitchenBase(env_base.MujocoEnv):
         obs_dict['goal_err'] = obs_dict['goal']-obs_dict['objs_jnt'] #??? Kettle has quaternions
         obs_dict['approach_err'] = self.sim.data.site_xpos[self.interact_sid] - self.sim.data.site_xpos[self.grasp_sid]
         obs_dict['pose_err'] = self.robot_meanpos-obs_dict['hand_jnt']
-        # print(obs_dict['objs_jnt'])
-        # import ipdb; ipdb.set_trace()
-
         return obs_dict
 
 
@@ -127,13 +114,9 @@ class KitchenBase(env_base.MujocoEnv):
         ))
         rwd_dict['dense'] = np.sum([wt*rwd_dict[key] for key, wt in self.rwd_keys_wt.items()], axis=0)
 
-        # print(rwd_dict)
         if self.mujoco_render_frames and VIZ:
             self.dict_plot.append(rwd_dict, self.rwd_keys_wt)
             # self.dict_plot.append(rwd_dict)
-
-        # import ipdb; ipdb.set_trace()
-
 
         return rwd_dict
 
@@ -144,10 +127,6 @@ class KitchenBase(env_base.MujocoEnv):
             self.goal = goal
         else: # treat current sim as goal
             self.goal = self.sim.data.qpos[self.obj_dofs].copy()
-
-        # import ipdb; ipdb.set_trace()
-
-
 
 
 class KitchenFetchFixed(KitchenBase):
