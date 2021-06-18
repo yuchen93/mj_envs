@@ -1,4 +1,6 @@
 import numpy as np
+
+from mujoco_py import MjViewer
 from mj_envs.envs import env_base
 import os
 import collections
@@ -16,9 +18,9 @@ class KitchenBase(env_base.MujocoEnv):
     }
     DEFAULT_RWD_KEYS_AND_WEIGHTS = {
         "goal": 1.0,
-        "bonus": 0.5,
-        "pose": 0*0.01,
-        "approach": 0.5,
+        "bonus": 0.0, #0.5,
+        "pose": 0, #0*0.01,
+        "approach": 0.1 #0.5,
     }
 
     def __init__(self, model_path, config_path,
@@ -56,16 +58,23 @@ class KitchenBase(env_base.MujocoEnv):
         # configure env-objs
         self.obj_dofs = []
         self.obj_ranges = []
+        
+        #print("+++++++++++++++++++")
         for jnt_name in obj_jnt_names:
             jnt_id = self.sim.model.joint_name2id(jnt_name)
             self.obj_dofs.append(self.sim.model.jnt_dofadr[jnt_id])
-            self.obj_ranges.append(self.sim.model.jnt_range[jnt_id])
+            self.obj_ranges.append(self.sim.model.jnt_range[jnt_id])    
+            #print(jnt_name, self.sim.model.jnt_dofadr[jnt_id], self.sim.model.jnt_range[jnt_id])
+        #print("+++++++++++++++++++")
+        
+
         self.obj_dofs = np.array(self.obj_dofs)
         self.obj_ranges = np.array(self.obj_ranges)
         self.obj_ranges = self.obj_ranges[:,1] - self.obj_ranges[:,0]
 
         # configure env-goal
         self.set_goal(goal)
+        self.viewer = None
 
         # get env
         env_base.MujocoEnv.__init__(self,
@@ -84,17 +93,23 @@ class KitchenBase(env_base.MujocoEnv):
                                 **kwargs)
 
         self.init_qpos = self.sim.model.key_qpos[0].copy()
-        
+
 
     def get_obs_dict(self, sim):
         obs_dict = {}
+
         obs_dict['t'] = np.array([sim.data.time])
+
+        ### raw observations
         obs_dict['hand_jnt'] = sim.data.qpos[self.robot_dofs].copy()
         obs_dict['objs_jnt'] = sim.data.qpos[self.obj_dofs].copy()
         obs_dict['goal'] = self.goal.copy()
+        #print(obs_dict['objs_jnt'],obs_dict['goal'])
+        ### deltas
         obs_dict['goal_err'] = obs_dict['goal']-obs_dict['objs_jnt'] #??? Kettle has quaternions
         obs_dict['approach_err'] = self.sim.data.site_xpos[self.interact_sid] - self.sim.data.site_xpos[self.grasp_sid]
         obs_dict['pose_err'] = self.robot_meanpos-obs_dict['hand_jnt']
+
         return obs_dict
 
 
@@ -108,10 +123,11 @@ class KitchenBase(env_base.MujocoEnv):
             ('pose',    -np.sum(np.abs(obs_dict['pose_err']), axis=-1)),
             ('approach',-np.linalg.norm(obs_dict['approach_err'], axis=-1)),
             # Must keys
-            ('sparse',  -np.sum(goal_dist, axis=-1)),
+            ('sparse',  -np.sum(goal_dist[0][0], axis=-1)),
             ('solved',  np.all(goal_dist < 0.1*self.obj_ranges)),
             ('done',    False),
         ))
+        #print(goal_dist[0][0], 0.1*self.obj_ranges, np.all(goal_dist[0][0] < 0.1*self.obj_ranges))
         rwd_dict['dense'] = np.sum([wt*rwd_dict[key] for key, wt in self.rwd_keys_wt.items()], axis=0)
 
         if self.mujoco_render_frames and VIZ:
@@ -128,6 +144,21 @@ class KitchenBase(env_base.MujocoEnv):
         else: # treat current sim as goal
             self.goal = self.sim.data.qpos[self.obj_dofs].copy()
 
+    def render(self, mode='human'):
+        ''' Render the environment to the screen '''
+        if self.viewer is None:
+            self.viewer = MjViewer(self.sim)
+            # Turn all the geom groups on
+            self.viewer.vopt.geomgroup[:] = 1
+            # Set camera if specified
+            if mode == 'human':
+                self.viewer.cam.fixedcamid = -1
+                #self.viewer.cam.type = const.CAMERA_FREE
+            else:
+                self.viewer.cam.fixedcamid = self.model.camera_name2id(mode)
+                #self.viewer.cam.type = const.CAMERA_FIXED
+        
+        self.viewer.render() 
 
 class KitchenFetchFixed(KitchenBase):
 
@@ -143,3 +174,18 @@ class KitchenFetchFixed(KitchenBase):
             obj_jnt_names = ('knob_Joint_1', 'knob_Joint_2', 'knob_Joint_3', 'knob_Joint_4', 'lightswitch_joint', 'slidedoor_joint', 'leftdoorhinge', 'rightdoorhinge', 'microjoint'),
             goal=goal,
             interact_site=interact_site)
+        
+        #properties = dir(self.sim.model.get_mjb().find(self.sim.model.body_name2id('microwave'))) #"./body[@name='microwave']"))
+        #for p in dir(self.sim.model):
+            #if 'body' in p: print(p)
+            #if 'get' in p: print(p)
+        #print(self.sim.model.body_name2id('microwave'))
+
+        #print(self.sim.model.body_ipos[self.sim.model.body_name2id('microwave')])
+        #print(self.sim.model.body_iquat[self.sim.model.body_name2id('microwave')])
+
+        #self.sim.model.body_ipos.flags.writeable = True
+        #self.sim.model.body_ipos[self.sim.model.body_name2id('microwave')] = [-0.65,  -0.025,  1.6 ]
+        #self.sim.model.body_iquat[self.sim.model.body_name2id('microwave')] = 
+        #print(self.sim.model.body_ipos[self.sim.model.body_name2id('microwave')])
+        

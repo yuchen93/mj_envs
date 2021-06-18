@@ -24,6 +24,7 @@ register(
     max_episode_steps=50,
     kwargs={
                 'goal': np.array([0, 0, 0, 0, 0, 0, 0, 0, -2.19]),
+                #'goal': np.array([0, 0, 0, 0, 0, 0, 0, 0, -5.19]),
                 'interact_site': "microhandle_site"
             }
 )
