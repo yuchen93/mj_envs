@@ -103,13 +103,14 @@ class KitchenBase(env_base.MujocoEnv):
         ### raw observations
         obs_dict['hand_jnt'] = sim.data.qpos[self.robot_dofs].copy()
         obs_dict['objs_jnt'] = sim.data.qpos[self.obj_dofs].copy()
+        obs_dict['hand_vel'] = sim.data.qvel[self.robot_dofs].copy() * self.dt
+        obs_dict['objs_vel'] = sim.data.qvel[self.obj_dofs].copy() * self.dt
         obs_dict['goal'] = self.goal.copy()
         #print(obs_dict['objs_jnt'],obs_dict['goal'])
         ### deltas
         obs_dict['goal_err'] = obs_dict['goal']-obs_dict['objs_jnt'] #??? Kettle has quaternions
         obs_dict['approach_err'] = self.sim.data.site_xpos[self.interact_sid] - self.sim.data.site_xpos[self.grasp_sid]
         obs_dict['pose_err'] = self.robot_meanpos-obs_dict['hand_jnt']
-
         return obs_dict
 
 
@@ -123,8 +124,8 @@ class KitchenBase(env_base.MujocoEnv):
             ('pose',    -np.sum(np.abs(obs_dict['pose_err']), axis=-1)),
             ('approach',-np.linalg.norm(obs_dict['approach_err'], axis=-1)),
             # Must keys
-            ('sparse',  -np.sum(goal_dist[0][0], axis=-1)),
-            ('solved',  np.all(goal_dist < 0.1*self.obj_ranges)),
+            ('sparse',  -np.sum(goal_dist, axis=-1)),
+            ('solved',  np.all(goal_dist < 0.15*self.obj_ranges)),
             ('done',    False),
         ))
         #print(goal_dist[0][0], 0.1*self.obj_ranges, np.all(goal_dist[0][0] < 0.1*self.obj_ranges))
@@ -164,7 +165,9 @@ class KitchenFetchFixed(KitchenBase):
 
     def __init__(self,
                 goal=None,
-                interact_site="end_effector"):
+                interact_site="end_effector",
+                **kwargs,
+                ):
 
         curr_dir = os.path.dirname(os.path.abspath(__file__))
         KitchenBase.__init__(self,
@@ -173,19 +176,5 @@ class KitchenFetchFixed(KitchenBase):
             robot_jnt_names = ('panda0_joint1', 'panda0_joint2', 'panda0_joint3', 'panda0_joint4', 'panda0_joint5', 'panda0_joint6', 'panda0_joint7', 'panda0_finger_joint1', 'panda0_finger_joint2'),
             obj_jnt_names = ('knob_Joint_1', 'knob_Joint_2', 'knob_Joint_3', 'knob_Joint_4', 'lightswitch_joint', 'slidedoor_joint', 'leftdoorhinge', 'rightdoorhinge', 'microjoint'),
             goal=goal,
-            interact_site=interact_site)
-        
-        #properties = dir(self.sim.model.get_mjb().find(self.sim.model.body_name2id('microwave'))) #"./body[@name='microwave']"))
-        #for p in dir(self.sim.model):
-            #if 'body' in p: print(p)
-            #if 'get' in p: print(p)
-        #print(self.sim.model.body_name2id('microwave'))
-
-        #print(self.sim.model.body_ipos[self.sim.model.body_name2id('microwave')])
-        #print(self.sim.model.body_iquat[self.sim.model.body_name2id('microwave')])
-
-        #self.sim.model.body_ipos.flags.writeable = True
-        #self.sim.model.body_ipos[self.sim.model.body_name2id('microwave')] = [-0.65,  -0.025,  1.6 ]
-        #self.sim.model.body_iquat[self.sim.model.body_name2id('microwave')] = 
-        #print(self.sim.model.body_ipos[self.sim.model.body_name2id('microwave')])
-        
+            interact_site=interact_site,
+            **kwargs)
