@@ -47,7 +47,7 @@ class MujocoEnv(gym.Env, utils.EzPickle, ObsVecDict):
                 frame_skip = 1,         # frame_skip
                 obs_keys = None,        # keys from obs_dict to use
                 rwd_keys_wt = None,     # {keys, wt} from rwd_dict to use
-                rwd_mode = "dense",     # dense / sparse
+                rwd_mode = "sparse",     # dense / sparse
                 act_normalized = True,  # use normalized actions
                 seed = None,            # seed the random number generator
                 obs_range = (-10, 10),  # obs_range (used to define obs_space)
@@ -321,6 +321,7 @@ class MujocoEnv(gym.Env, utils.EzPickle, ObsVecDict):
             self.viewer.cam.elevation = -30
             self.viewer.cam.azimuth = 90
             self.viewer.cam.distance = 2.5
+
             # self.viewer.lookat = np.array([-0.15602934,  0.32243594,  0.70929817])
             #self.viewer._run_speed /= self.frame_skip
             self.viewer.render()

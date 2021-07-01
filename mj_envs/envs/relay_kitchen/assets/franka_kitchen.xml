@@ -21,7 +21,7 @@
 
     <visual>
         <global offwidth="2560" offheight="1920" />
-        <quality shadowsize="4096" offsamples="4" />
+        <quality shadowsize="0" offsamples="4" />
         <map force="0.1" fogend="5" />
     </visual>
 
@@ -44,9 +44,13 @@
         <camera name='left_cap' pos='-1.2 -0.5 1.8' quat='0.78 0.49 -0.22 -0.32' />
         <camera name='right_cap' pos='1.2 -0.5 1.8' quat='0.76 0.5 0.21 0.35'/>
 
+         <camera name='eye_level' pos='-0.6 -1.5 2.2' quat='0.705 0.705 0.0 0.0'/>
+         <camera name='counter_top' pos='0.0 -0.6 3.0' quat='0.924 0.383 0.0 0.0'/>
+         <camera name='overhead' pos='-0.2 -1.5 3.2' quat='0.866 0.500 0.0 0.0'/> 
+
         <!-- Robot -->
         <body pos='0. 0 1.8' euler='0 0 1.57'>
-            <geom type='cylinder' size='.120 .90' pos='-.04 0 -0.90' class='panda_viz'/>
+            <geom rgba="0 0 0 0" type='cylinder' size='.120 .90' pos='-.04 0 -0.90' class='panda_viz'/>
             <include file="../../../sims/franka_sim/assets/chain0.xml"/>
         </body>
 
@@ -71,7 +75,7 @@
                 <include file="../../../sims/furniture_sim/microwave/microwave_body.xml"/>
             </body>
         </body>
-        <body name="kettle" pos="-0.269 0.35 1.626">
+        <body name="kettle" pos="-0.269 0.35 0.626">
             <freejoint/>
             <include file="../../../sims/furniture_sim/kettle/kettle_body0.xml"/>
         </body>

@@ -5,7 +5,92 @@ from mj_envs.envs import env_base
 import os
 import collections
 
+
+import torch
+from PIL import Image
+import torchvision.models as models
+from torchvision import transforms
+import numpy as np
+import cv2
+
 VIZ = False
+device = "cuda" if torch.cuda.is_available() else "cpu"
+DEMO_MODE = 'microwave' #'cabinet' #
+BASE_DIR = '/Users/yuchencui/Projects/active_learning/'
+
+class DeepFeatureSimilarityRewardFunction(object):
+    def __init__(self) -> None:
+        super().__init__()
+        self.preprocess = transforms.Compose([
+            transforms.Resize(256),
+            transforms.CenterCrop(224),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        ])
+
+        self.model = models.resnet152(pretrained=True)
+        modules=list(self.model.children())[:-1]
+        self.modelmodel=torch.nn.Sequential(*modules)
+        for p in self.model.parameters():
+            p.requires_grad = False
+            
+        self.model.eval()
+
+        data_dir = BASE_DIR + 'online_imgs/' + DEMO_MODE
+
+        goal_img_paths = [os.path.join(data_dir+'/goal', f) for f in os.listdir(data_dir+'/goal') if f.endswith('.jpg') or f.endswith('.jpeg') or f.endswith('.png')] 
+        init_img_paths = [os.path.join(data_dir+'/init', f) for f in os.listdir(data_dir+'/init') if f.endswith('.jpg') or f.endswith('.jpeg') or f.endswith('.png')] 
+        #goal_img_paths = ['online_imgs/'+DEMO_MODE+'_open.jpg'] 
+        #init_img_paths = ['online_imgs/'+DEMO_MODE+'_closed.jpg'] 
+
+        goal_imgs = torch.stack([self.preprocess(Image.open(f)).to(device) for f in goal_img_paths])
+        init_imgs = torch.stack([self.preprocess(Image.open(f)).to(device) for f in init_img_paths])
+
+        if DEMO_MODE == 'microwave': 
+            base_image = Image.open(BASE_DIR+"imgs/kitchen_micro_open-v2_0_0.png")
+        else:
+            base_image = Image.open(BASE_DIR+"imgs/kitchen_ldoor_open-v2_0_0.png")
+
+        goal_img_features = self.model(goal_imgs)
+        init_img_features = self.model(init_imgs)
+
+        avg_init = torch.mean(init_img_features, axis=0)
+        #avg_goal = torch.mean(goal_img_features, axis=0)
+        #print(avg_init.shape, avg_goal.shape)
+
+        self.delta_img_features = goal_img_features - avg_init.unsqueeze(0)
+
+        base_image = self.preprocess(base_image).unsqueeze(0).to(device)
+        self.base_features = self.model(base_image)
+
+
+    def eval_img(self, im):
+        im = self.preprocess(self.crop_img(im)).unsqueeze(0).to(device)
+        img_feature = self.model(im) - self.base_features
+        similarity = np.mean(torch.nn.functional.cosine_similarity(img_feature,self.delta_img_features).numpy())
+        return similarity
+
+
+
+    def crop_img(self, im):
+        # Setting the points for cropped image
+        if DEMO_MODE == 'microwave':
+            left = 25
+            right = 150
+            top = 120 
+            bottom = 248
+        else:
+            left = 65
+            right = 195
+            top = 15 
+            bottom = 138
+        
+        im1 = im.crop((left, top, right, bottom))
+
+        return im1
+    
+
+
 
 class KitchenBase(env_base.MujocoEnv):
 
@@ -18,9 +103,9 @@ class KitchenBase(env_base.MujocoEnv):
     }
     DEFAULT_RWD_KEYS_AND_WEIGHTS = {
         "goal": 1.0,
-        "bonus": 0.0, #0.5,
-        "pose": 0, #0*0.01,
-        "approach": 0.1 #0.5,
+        "bonus": 0.5,
+        "pose": 0.01,
+        "approach": 0.5,
     }
 
     def __init__(self, model_path, config_path,
@@ -95,6 +180,10 @@ class KitchenBase(env_base.MujocoEnv):
         self.init_qpos = self.sim.model.key_qpos[0].copy()
 
 
+        #self.deep_visual_reward_function = DeepFeatureSimilarityRewardFunction()
+
+
+
     def get_obs_dict(self, sim):
         obs_dict = {}
 
@@ -115,11 +204,23 @@ class KitchenBase(env_base.MujocoEnv):
 
 
     def get_reward_dict(self, obs_dict):
+        '''
+        try:
+            visual_img = self.sim.render(width=256, height=256, depth=False, camera_name="eye_level")
+            img = Image.fromarray(cv2.flip(visual_img,0))
+            visual_r = self.deep_visual_reward_function.eval_img(img)
+        except Exception:
+            self.deep_visual_reward_function = DeepFeatureSimilarityRewardFunction()
+            visual_img = self.sim.render(width=256, height=256, depth=False, camera_name="eye_level")
+            img = Image.fromarray(cv2.flip(visual_img,0))
+            visual_r = self.deep_visual_reward_function.eval_img(img)
+        '''
+
         goal_dist = np.abs(obs_dict['goal_err'])
 
         rwd_dict = collections.OrderedDict((
             # Optional Keys
-            ('goal',    -np.sum(goal_dist, axis=-1)),
+            ('goal',    -np.sum(goal_dist, axis=-1)), #visual_r), #
             ('bonus',   np.sum(goal_dist < 0.75*self.obj_ranges, axis=-1) + np.sum(goal_dist < 0.25*self.obj_ranges, axis=-1)),
             ('pose',    -np.sum(np.abs(obs_dict['pose_err']), axis=-1)),
             ('approach',-np.linalg.norm(obs_dict['approach_err'], axis=-1)),
