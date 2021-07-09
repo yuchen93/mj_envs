@@ -36,7 +36,7 @@ class DeepFeatureSimilarityRewardFunction(object):
             
         self.model.eval()
 
-        data_dir = BASE_DIR + 'online_imgs/' + DEMO_MODE
+        data_dir = BASE_DIR + 'online_imgs/kitchen_micro_open-v2/'
 
         goal_img_paths = [os.path.join(data_dir+'/goal', f) for f in os.listdir(data_dir+'/goal') if f.endswith('.jpg') or f.endswith('.jpeg') or f.endswith('.png')] 
         init_img_paths = [os.path.join(data_dir+'/init', f) for f in os.listdir(data_dir+'/init') if f.endswith('.jpg') or f.endswith('.jpeg') or f.endswith('.png')] 
@@ -46,11 +46,9 @@ class DeepFeatureSimilarityRewardFunction(object):
         goal_imgs = torch.stack([self.preprocess(Image.open(f)).to(device) for f in goal_img_paths])
         init_imgs = torch.stack([self.preprocess(Image.open(f)).to(device) for f in init_img_paths])
 
-        if DEMO_MODE == 'microwave': 
-            base_image = Image.open(BASE_DIR+"imgs/kitchen_micro_open-v2_0_0.png")
-        else:
-            base_image = Image.open(BASE_DIR+"imgs/kitchen_ldoor_open-v2_0_0.png")
-
+        #base_image = Image.open(BASE_DIR+"imgs/kitchen_micro_open-v2/kitchen_micro_open-v2_0_0.png")
+        base_image = Image.open("/Users/yuchencui/Projects/active_learning/franka_baselines/human_demo_imgs/friday_microwave_bottomknob_hinge_slide_kitchen_playdata_2019_06_28_12_12_01_demo_render/0000.png")
+        
         goal_img_features = self.model(goal_imgs)
         init_img_features = self.model(init_imgs)
 
@@ -60,7 +58,7 @@ class DeepFeatureSimilarityRewardFunction(object):
 
         self.delta_img_features = goal_img_features - avg_init.unsqueeze(0)
 
-        base_image = self.preprocess(base_image).unsqueeze(0).to(device)
+        base_image = self.preprocess(self.crop_img(base_image)).unsqueeze(0).to(device)
         self.base_features = self.model(base_image)
 
 
@@ -74,7 +72,11 @@ class DeepFeatureSimilarityRewardFunction(object):
 
     def crop_img(self, im):
         # Setting the points for cropped image
-        if DEMO_MODE == 'microwave':
+        
+        #left, right, top, bottom = 25, 150, 120, 248
+        left, right, top, bottom = 5, 110, 110, 200
+       
+        '''if DEMO_MODE == 'microwave':
             left = 25
             right = 150
             top = 120 
@@ -83,7 +85,7 @@ class DeepFeatureSimilarityRewardFunction(object):
             left = 65
             right = 195
             top = 15 
-            bottom = 138
+            bottom = 138'''
         
         im1 = im.crop((left, top, right, bottom))
 
@@ -102,10 +104,10 @@ class KitchenBase(env_base.MujocoEnv):
         "approach_err": 1.0,
     }
     DEFAULT_RWD_KEYS_AND_WEIGHTS = {
-        "goal": 1.0,
-        "bonus": 0.5,
-        "pose": 0.01,
-        "approach": 0.5,
+        "goal": 5.0,
+        "bonus": 0.0, #0.5,
+        "pose": 0.0, #0.01,
+        "approach": 0.0, #0.5,
     }
 
     def __init__(self, model_path, config_path,
@@ -182,7 +184,7 @@ class KitchenBase(env_base.MujocoEnv):
 
         #self.deep_visual_reward_function = DeepFeatureSimilarityRewardFunction()
 
-
+    
 
     def get_obs_dict(self, sim):
         obs_dict = {}
@@ -204,28 +206,28 @@ class KitchenBase(env_base.MujocoEnv):
 
 
     def get_reward_dict(self, obs_dict):
-        '''
-        try:
-            visual_img = self.sim.render(width=256, height=256, depth=False, camera_name="eye_level")
+        
+        '''try:
+            visual_img = self.sim.render(width=256, height=256, depth=False, camera_name="overhead")
             img = Image.fromarray(cv2.flip(visual_img,0))
             visual_r = self.deep_visual_reward_function.eval_img(img)
         except Exception:
             self.deep_visual_reward_function = DeepFeatureSimilarityRewardFunction()
-            visual_img = self.sim.render(width=256, height=256, depth=False, camera_name="eye_level")
+            visual_img = self.sim.render(width=256, height=256, depth=False, camera_name="overhead")
             img = Image.fromarray(cv2.flip(visual_img,0))
-            visual_r = self.deep_visual_reward_function.eval_img(img)
-        '''
+            visual_r = self.deep_visual_reward_function.eval_img(img)'''
+        
 
         goal_dist = np.abs(obs_dict['goal_err'])
 
         rwd_dict = collections.OrderedDict((
             # Optional Keys
-            ('goal',    -np.sum(goal_dist, axis=-1)), #visual_r), #
+            ('goal',    -np.sum(goal_dist, axis=-1)), # visual_r), #
             ('bonus',   np.sum(goal_dist < 0.75*self.obj_ranges, axis=-1) + np.sum(goal_dist < 0.25*self.obj_ranges, axis=-1)),
             ('pose',    -np.sum(np.abs(obs_dict['pose_err']), axis=-1)),
             ('approach',-np.linalg.norm(obs_dict['approach_err'], axis=-1)),
             # Must keys
-            ('sparse',  -np.sum(goal_dist, axis=-1)),
+            ('sparse', -np.sum(goal_dist, axis=-1)), #visual_r ), #
             ('solved',  np.all(goal_dist < 0.15*self.obj_ranges)),
             ('done',    False),
         ))
