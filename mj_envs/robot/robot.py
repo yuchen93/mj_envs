@@ -5,6 +5,7 @@ from collections import deque
 from mujoco_py import load_model_from_path, MjSim, functions
 import os
 from transforms3d.taitbryan import quat2euler
+np.set_printoptions(precision=4)
 
 
 _VERBOSE = False
@@ -108,23 +109,56 @@ class Robot():
         for name, device in robot_config.items():
             prompt("Initializing device: %s"%(name), 'white', 'on_grey')
             if device['interface']['type'] == 'dynamixel':
-                from hardware_dynamixel import Dynamixels
-                device['robot'] = Dynamixels()
+                # initialize dynamixels
+                from dynamixel_py import dxl
+                ids = np.unique([device['sensor_ids'] + device['actuator_ids']]).tolist()
+                device['robot'] = dxl(motor_id=ids, motor_type=\
+                    device['interface']['motor_type'], devicename= device['interface']['name'])
 
-            if device['interface']['type'] == 'optitrack':
-                from hardware_optitrack import OptiTrack
+                # from .hardware_dynamixel import Dynamixels
+                # motor_ids = np.unique([device['sensor_ids'] + device['actuator_ids']]).tolist()
+                # device['robot'] = Dynamixels(name=name, motor_ids=motor_ids, motor_type=device['interface']['motor_type'], devicename= device['interface']['name'])
+
+            elif device['interface']['type'] == 'optitrack':
+                from .hardware_optitrack import OptiTrack
                 device['robot'] = OptiTrack(ip=device['interface']['client_name'], \
                     port=device['interface']['port'], packet_size=device['interface']['packet_size'])
 
+            elif device['interface']['type'] == 'franka':
+                from .hardware_franka import FrankaArm
+                device['robot'] = FrankaArm(name="Franka-Demo", ip_address=device['interface']['ip_address'])
+
+            else:
+                print("ERROR: interface not found")
+                raise NotImplemented
+
+
+
         # start all hardware
         for name, device in robot_config.items():
+
             # Dynamixels
             if device['interface']['type'] == 'dynamixel':
-                device['robot'].connect()
+                device['robot'].open_port()
+
+                # set actuator mode
+                for actuator in device['actuator']:
+                    device['robot'].set_operation_mode(motor_id=[actuator['hdr_id']], mode=actuator['mode'])
+
+                # engage motors
+                device['robot'].engage_motor(motor_id=device['actuator_ids'], enable=True)
 
             # Optitrack
             elif device['interface']['type'] == 'optitrack':
                 device['robot'].connect()
+
+            # Franka
+            elif device['interface']['type'] == 'franka':
+                device['robot'].connect()
+
+            else:
+                print("ERROR: interface not found")
+                raise NotImplemented
 
         return robot_config
 
@@ -152,9 +186,14 @@ class Robot():
                 current_sensor_value[name] = np.concatenate([data['pos'], np.array([rx, ry, rz])])
                 # current_sensor_value[name] = np.array([x, y, z, 0, 0, 0])
                 # current_sensor_value[name] = np.array([x, y, z, -(a+np.pi/2), -c, -b])
+
+            elif device['interface']['type'] == 'franka':
+                current_sensor_value[name] = device['robot'].get_sensors()
+
             else:
                 print("ERROR: interface not found")
                 raise NotImplemented
+
             # calibrate sensors
             for id, sensor in enumerate(device['sensor']):
                 current_sensor_value[name][id] = current_sensor_value[name][id]*sensor['scale'] + sensor['offset']
@@ -175,10 +214,10 @@ class Robot():
                 for actuator in device['actuator']:
                     # calibrate
                     calib_ctrl = control[actuator['sim_id']]*actuator['scale']+ actuator['offset']
-                    if actuator['mode'] is 'Position':
+                    if actuator['mode'] == 'Position':
                         pos_ids.append(actuator['hdr_id'])
                         pos_ctrl.append(calib_ctrl)
-                    elif actuator['mode'] is 'PWM':
+                    elif actuator['mode'] == 'PWM':
                         pwm_ids.append(actuator['hdr_id'])
                         pwm_ctrl.append(calib_ctrl)
                     else:
@@ -190,6 +229,15 @@ class Robot():
                 if pwm_ids:
                     device['robot'].set_des_pwm(pwm_ids, pwm_ctrl)
 
+            elif device['interface']['type'] == 'franka':
+                franka_des_pos = []
+                for actuator in device['actuator']:
+                    # calibrate
+                    franka_des_pos.append(control[actuator['sim_id']]*actuator['scale']+ actuator['offset'])
+                device['robot'].apply_commands(franka_des_pos)
+            else:
+                raise NotImplemented("ERROR: interface not found")
+
 
     # close hardware
     def hardware_close(self):
@@ -197,15 +245,26 @@ class Robot():
         for name, device in self.robot_config.items():
             if device['interface']['type'] == 'dynamixel':
                 if device['robot']:
+                    print("Closing dynamixel connection")
                     ids = np.unique([device['sensor_ids'] + device['actuator_ids']]).tolist()
                     status = device['robot'].close(ids)
                     if status is True:
                         device['robot']= None
             elif device['interface']['type'] == 'optitrack':
                 if device['robot']:
+                    print("Closing optitrack connection")
                     status = device['robot'].close()
                     if status is True:
                         device['robot']= None
+            elif device['interface']['type'] == 'franka':
+                    print("Closing franka connection")
+                    status = device['robot'].close()
+                    if status is True:
+                        device['robot']= None
+            else:
+                print("ERROR: interface not found")
+                raise NotImplemented
+
         return status
 
 
@@ -353,12 +412,13 @@ class Robot():
         """
         # last_obs = self.get_sensor_from_cache(-1)
         processed_controls = controls.copy()
-
+        act_id = -1
         for name, device in self.robot_config.items():
-            for act_id, actuator in enumerate(device['actuator']):
+            for actuator in device['actuator']:
+                act_id += 1
                 in_id = actuator['sim_id']
                 # output ordering is as per the config order for hdr
-                out_id = actuator['sim_id'] if out_space is 'sim' else act_id
+                out_id = actuator['sim_id'] if out_space == 'sim' else act_id
 
                 control = controls[in_id]
                 if self._act_mode == "pos":
@@ -382,6 +442,8 @@ class Robot():
                     # ALERT: This depends on previous sensor. This is not ideal as it breaks MDP addumptions. Be careful
                     last_obs = getattr(self.sim.data, actuator["data_type"])[actuator["data_id"]]
                     control = last_obs + control*step_duration
+                else:
+                    raise TypeError("Unknown act mode: {}".format(self._act_mode))
 
                 # enforce position limits
                 if position_limits:
@@ -464,14 +526,14 @@ class Robot():
         for name, device in self.robot_config.items():
             if len(device['actuator'])>0: # actuated dofs
                 for actuator in device['actuator']:
-                    if actuator['data_type'] is 'qpos':
+                    if actuator['data_type'] == 'qpos':
                         feasibe_pos[actuator['data_id']] = np.clip(reset_pos[actuator['data_id']], actuator['pos_range'][0], actuator['pos_range'][1])
                         ctrl_feasible.append(feasibe_pos[actuator['data_id']])
             else: # passive dofs
                 for sensor in device['sensor']:
-                    if sensor['data_type'] is 'qpos':
+                    if sensor['data_type'] == 'qpos':
                         feasibe_pos[sensor['data_id']] = np.clip(reset_pos[sensor['data_id']], sensor['range'][0], sensor['range'][1])
-                    elif sensor['data_type'] is 'qvel':
+                    elif sensor['data_type'] == 'qvel':
                         feasibe_vel[sensor['data_id']] = np.clip(reset_vel[sensor['data_id']], sensor['range'][0], sensor['range'][1])
 
         if self.is_hardware:
