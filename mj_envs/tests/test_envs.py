@@ -1,5 +1,4 @@
 import unittest
-
 import gym
 import mj_envs
 
@@ -25,7 +24,17 @@ class TestEnvs(unittest.TestCase):
             'kitchen_knob4_on-v2',
             'kitchen_knob3_on-v2',
             'kitchen_knob2_on-v2',
-            'kitchen_knob1_on-v2']
+            'kitchen_knob1_on-v2',
+            'kitchen-v3',
+            'kitchen_micro_open-v3',
+            'kitchen_rdoor_open-v3',
+            'kitchen_ldoor_open-v3',
+            'kitchen_sdoor_open-v3',
+            'kitchen_light_on-v3',
+            'kitchen_knob4_on-v3',
+            'kitchen_knob3_on-v3',
+            'kitchen_knob2_on-v3',
+            'kitchen_knob1_on-v3']
         self.load_envs('Franka Kitchen', env_names)
 
     # Arms
@@ -36,6 +45,14 @@ class TestEnvs(unittest.TestCase):
             'FetchReachFixed-v0',
             'FetchReachFixed-v0']
         self.load_envs('Arms', env_names)
+
+    # Functional Manipulation
+    def test_fm(self):
+        env_names = [
+            # 'DManusReachFixed-v0',
+            'FMReachFixed-v0'
+            ]
+        self.load_envs('Functional Manipulation', env_names)
 
 
 if __name__ == '__main__':
