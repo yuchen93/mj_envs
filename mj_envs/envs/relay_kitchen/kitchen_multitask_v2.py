@@ -13,13 +13,16 @@ from torchvision import transforms
 import numpy as np
 import cv2
 
+import clip
+
 VIZ = False
 device = "cuda" if torch.cuda.is_available() else "cpu"
 DEMO_MODE = 'microwave' #'cabinet' #
-BASE_DIR = '/Users/yuchencui/Projects/active_learning/'
+#BASE_DIR = '/Users/yuchencui/Projects/active_learning/'
+BASE_DIR = '/private/home/yuchencui/projects/active_learning/'
 
 class DeepFeatureSimilarityRewardFunction(object):
-    def __init__(self) -> None:
+    def __init__(self, mode ='clip') -> None:
         super().__init__()
         self.preprocess = transforms.Compose([
             transforms.Resize(256),
@@ -28,7 +31,11 @@ class DeepFeatureSimilarityRewardFunction(object):
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ])
 
-        self.model = models.resnet152(pretrained=True)
+        if mode == 'clip': self.model, self.preprocess = clip.load("ViT-B/32", device=device)
+        else: self.model = models.resnet152(pretrained=True)
+        self.mode = mode
+
+        self.model = self.model.cuda()
         modules=list(self.model.children())[:-1]
         self.modelmodel=torch.nn.Sequential(*modules)
         for p in self.model.parameters():
@@ -36,7 +43,7 @@ class DeepFeatureSimilarityRewardFunction(object):
             
         self.model.eval()
 
-        data_dir = BASE_DIR + 'online_imgs/kitchen_micro_open-v2/'
+        data_dir = BASE_DIR + 'online_imgs/kitchen_micro_open-v3/'
 
         goal_img_paths = [os.path.join(data_dir+'/goal', f) for f in os.listdir(data_dir+'/goal') if f.endswith('.jpg') or f.endswith('.jpeg') or f.endswith('.png')] 
         init_img_paths = [os.path.join(data_dir+'/init', f) for f in os.listdir(data_dir+'/init') if f.endswith('.jpg') or f.endswith('.jpeg') or f.endswith('.png')] 
@@ -47,10 +54,17 @@ class DeepFeatureSimilarityRewardFunction(object):
         init_imgs = torch.stack([self.preprocess(Image.open(f)).to(device) for f in init_img_paths])
 
         #base_image = Image.open(BASE_DIR+"imgs/kitchen_micro_open-v2/kitchen_micro_open-v2_0_0.png")
-        base_image = Image.open("/Users/yuchencui/Projects/active_learning/franka_baselines/human_demo_imgs/friday_microwave_bottomknob_hinge_slide_kitchen_playdata_2019_06_28_12_12_01_demo_render/0000.png")
-        
-        goal_img_features = self.model(goal_imgs)
-        init_img_features = self.model(init_imgs)
+        #base_image = Image.open("/Users/yuchencui/Projects/active_learning/franka_baselines/human_demo_imgs/friday_microwave_bottomknob_hinge_slide_kitchen_playdata_2019_06_28_12_12_01_demo_render/0000.png")
+        base_image = Image.open(BASE_DIR+"kitchen_base_image.png")
+        base_image = self.preprocess(self.crop_img(base_image)).unsqueeze(0).to(device)
+        if self.mode == 'clip':
+            goal_img_features = self.model.encode_image(goal_imgs)
+            init_img_features = self.model.encode_image(init_imgs) 
+            self.base_features = self.model.encode_image(base_image)
+        else:
+            goal_img_features = self.model(goal_imgs)
+            init_img_features = self.model(init_imgs)
+            self.base_features = self.model(base_image)
 
         avg_init = torch.mean(init_img_features, axis=0)
         #avg_goal = torch.mean(goal_img_features, axis=0)
@@ -58,14 +72,13 @@ class DeepFeatureSimilarityRewardFunction(object):
 
         self.delta_img_features = goal_img_features - avg_init.unsqueeze(0)
 
-        base_image = self.preprocess(self.crop_img(base_image)).unsqueeze(0).to(device)
-        self.base_features = self.model(base_image)
 
 
     def eval_img(self, im):
         im = self.preprocess(self.crop_img(im)).unsqueeze(0).to(device)
-        img_feature = self.model(im) - self.base_features
-        similarity = np.mean(torch.nn.functional.cosine_similarity(img_feature,self.delta_img_features).numpy())
+        if self.mode == 'clip': img_feature = self.model.encode_image(im) - self.base_features
+        else: img_feature = self.model(im) - self.base_features
+        similarity = np.mean(torch.nn.functional.cosine_similarity(img_feature,self.delta_img_features).cpu().numpy())
         return similarity
 
 
@@ -241,7 +254,7 @@ class KitchenBase(env_base.MujocoEnv):
 
     def get_reward_dict(self, obs_dict):
         
-        '''try:
+        try:
             visual_img = self.sim.render(width=256, height=256, depth=False, camera_name="overhead")
             img = Image.fromarray(cv2.flip(visual_img,0))
             visual_r = self.deep_visual_reward_function.eval_img(img)
@@ -249,19 +262,19 @@ class KitchenBase(env_base.MujocoEnv):
             self.deep_visual_reward_function = DeepFeatureSimilarityRewardFunction()
             visual_img = self.sim.render(width=256, height=256, depth=False, camera_name="overhead")
             img = Image.fromarray(cv2.flip(visual_img,0))
-            visual_r = self.deep_visual_reward_function.eval_img(img)'''
+            visual_r = self.deep_visual_reward_function.eval_img(img)
         
 
         goal_dist = np.abs(obs_dict['goal_err'])
 
         rwd_dict = collections.OrderedDict((
             # Optional Keys
-            ('goal',    -np.sum(goal_dist, axis=-1)), # visual_r), #
+            ('goal',    visual_r), #-np.sum(goal_dist, axis=-1)), # visual_r), #
             ('bonus',   np.product(goal_dist < 0.75*self.obj['dof_ranges'], axis=-1) + np.product(goal_dist < 0.25*self.obj['dof_ranges'], axis=-1)),
             ('pose',    -np.sum(np.abs(obs_dict['pose_err']), axis=-1)),
             ('approach',-np.linalg.norm(obs_dict['approach_err'], axis=-1)),
             # Must keys
-            ('sparse',  -np.sum(goal_dist, axis=-1)), #visual_r ), #
+            ('sparse',  visual_r), #-np.sum(goal_dist, axis=-1)), #visual_r ), #
             ('solved',  np.all(goal_dist < 0.15*self.obj['dof_ranges'])),
             ('done',    False),
         ))
