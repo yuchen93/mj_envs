@@ -18,11 +18,11 @@ import clip
 VIZ = False
 device = "cuda" if torch.cuda.is_available() else "cpu"
 DEMO_MODE = 'microwave' #'cabinet' #
-#BASE_DIR = '/Users/yuchencui/Projects/active_learning/'
-BASE_DIR = '/private/home/yuchencui/projects/active_learning/'
+BASE_DIR = '/Users/yuchencui/Projects/active_learning/'
+#BASE_DIR = '/private/home/yuchencui/projects/active_learning/'
 
 class DeepFeatureSimilarityRewardFunction(object):
-    def __init__(self, mode ='clip') -> None:
+    def __init__(self, task_id ,mode ='clip') -> None:
         super().__init__()
         self.preprocess = transforms.Compose([
             transforms.Resize(256),
@@ -30,12 +30,35 @@ class DeepFeatureSimilarityRewardFunction(object):
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ])
+        
+        env_site_dict = {
+            "knob1_site" : "kitchen_knob1_on-v3",
+            "knob2_site" : "kitchen_knob2_on-v3",
+            "knob3_site" : "kitchen_knob3_on-v3",
+            "knob4_site" : "kitchen_knob4_on-v3",
+            "leftdoor_site": "kitchen_ldoor_open-v3",
+            "light_site": "kitchen_light_on-v3",
+            "microhandle_site" : "kitchen_micro_open-v3",
+            "rightdoor_site" : "kitchen_rdoor_open-v3",
+            "slide_site" : "kitchen_sdoor_open-v3"  
+         }
 
-        if mode == 'clip': self.model, self.preprocess = clip.load("ViT-B/32", device=device)
-        else: self.model = models.resnet152(pretrained=True)
+        self.task_id = env_site_dict[task_id]
+        if 'micro' in task_id or 'leftdoor' in task_id or 'rightdoor' in task_id:
+            self.view_points = ['eye_level', 'eye_level1', 'eye_level2', 'eye_level3', 'eye_level4']
+        elif 'knob' in task_id or 'light' in task_id:
+            self.view_points = ['counter_top', 'counter_top1', 'counter_top2', 'counter_top3', 'counter_top4']
+        else:
+            self.view_points = ['overhead', 'overhead1', 'overhead2', 'overhead3', 'overhead4']
+
+
+        if mode == 'clip': 
+            self.model, self.preprocess = clip.load("ViT-B/32", device=device)
+        else: 
+            self.model = models.resnet152(pretrained=True)
+            self.model = self.model.to(device)
+        
         self.mode = mode
-
-        self.model = self.model.cuda()
         modules=list(self.model.children())[:-1]
         self.modelmodel=torch.nn.Sequential(*modules)
         for p in self.model.parameters():
@@ -47,63 +70,118 @@ class DeepFeatureSimilarityRewardFunction(object):
 
         goal_img_paths = [os.path.join(data_dir+'/goal', f) for f in os.listdir(data_dir+'/goal') if f.endswith('.jpg') or f.endswith('.jpeg') or f.endswith('.png')] 
         init_img_paths = [os.path.join(data_dir+'/init', f) for f in os.listdir(data_dir+'/init') if f.endswith('.jpg') or f.endswith('.jpeg') or f.endswith('.png')] 
-        #goal_img_paths = ['online_imgs/'+DEMO_MODE+'_open.jpg'] 
-        #init_img_paths = ['online_imgs/'+DEMO_MODE+'_closed.jpg'] 
 
         goal_imgs = torch.stack([self.preprocess(Image.open(f)).to(device) for f in goal_img_paths])
         init_imgs = torch.stack([self.preprocess(Image.open(f)).to(device) for f in init_img_paths])
 
-        #base_image = Image.open(BASE_DIR+"imgs/kitchen_micro_open-v2/kitchen_micro_open-v2_0_0.png")
-        #base_image = Image.open("/Users/yuchencui/Projects/active_learning/franka_baselines/human_demo_imgs/friday_microwave_bottomknob_hinge_slide_kitchen_playdata_2019_06_28_12_12_01_demo_render/0000.png")
-        base_image = Image.open(BASE_DIR+"kitchen_base_image.png")
-        base_image = self.preprocess(self.crop_img(base_image)).unsqueeze(0).to(device)
+        base_img_dir = BASE_DIR + "/base_imgs/"
+        base_images = [self.preprocess(self.crop_img(Image.open(base_img_dir+env_site_dict[task_id]+'/'+viewpoint+'/base_img.png'),view_point=viewpoint)) for viewpoint in self.view_points]
+        
+        base_image_tensor = torch.stack(base_images).to(device)
         if self.mode == 'clip':
             goal_img_features = self.model.encode_image(goal_imgs)
             init_img_features = self.model.encode_image(init_imgs) 
-            self.base_features = self.model.encode_image(base_image)
+            self.base_features = self.model.encode_image(base_image_tensor)
         else:
             goal_img_features = self.model(goal_imgs)
             init_img_features = self.model(init_imgs)
-            self.base_features = self.model(base_image)
+            self.base_features = self.model(base_image_tensor)
 
-        avg_init = torch.mean(init_img_features, axis=0)
-        #avg_goal = torch.mean(goal_img_features, axis=0)
-        #print(avg_init.shape, avg_goal.shape)
+        #avg_init = torch.mean(init_img_features, axis=0)
+        #self.delta_img_features = goal_img_features - avg_init.unsqueeze(0)
 
-        self.delta_img_features = goal_img_features - avg_init.unsqueeze(0)
+        delta_img_features = []
+        for g_img in goal_img_features:
+            highest_similarity = - np.inf
+            mll_delta_feature = None
+            for i_img in init_img_features:
+                sim = torch.nn.functional.cosine_similarity(g_img.unsqueeze(0),i_img.unsqueeze(0)).cpu()
+                if sim > highest_similarity:
+                    highest_similarity = sim
+                    mll_delta_feature = g_img.numpy() - i_img.numpy()
+            delta_img_features.append(mll_delta_feature)
+
+        self.delta_img_features = torch.mean(torch.tensor(delta_img_features), 0, True).to(device)
 
 
 
     def eval_img(self, im):
         im = self.preprocess(self.crop_img(im)).unsqueeze(0).to(device)
-        if self.mode == 'clip': img_feature = self.model.encode_image(im) - self.base_features
-        else: img_feature = self.model(im) - self.base_features
+        if self.mode == 'clip': img_feature = self.model.encode_image(im) - self.base_features[0]
+        else: img_feature = self.model(im) - self.base_features[0]
         similarity = np.mean(torch.nn.functional.cosine_similarity(img_feature,self.delta_img_features).cpu().numpy())
         return similarity
 
 
+    def eval_imgs(self, ims):
+        processed_imgs = []
+        for im_i in range(len(ims)):
+            processed_imgs.append(self.preprocess(self.crop_img(ims[im_i],view_point=self.viewpoints[im_i])))
+        ims = torch.stack(processed_imgs).to(device)
+        if self.mode == 'clip': img_feature = self.model.encode_image(ims) - self.base_features
+        else: img_feature = self.model(ims) - self.base_features
+        ## average over each viewpoint, compute feature similarity avg delta feature
+        similarity = np.mean(torch.nn.functional.cosine_similarity(img_feature,self.delta_img_features).cpu().numpy())
+        return similarity
 
-    def crop_img(self, im):
-        # Setting the points for cropped image
-        
-        #left, right, top, bottom = 25, 150, 120, 248
-        left, right, top, bottom = 5, 110, 110, 200
-       
-        '''if DEMO_MODE == 'microwave':
-            left = 25
-            right = 150
-            top = 120 
-            bottom = 248
+
+    def crop_img(self, im, view_point):
+        if view_point is None:
+            if 'micro' in self.task_id:
+                #left, right, top, bottom = 25, 150, 120, 248 # eye-level view crop
+                left, right, top, bottom = 5, 110, 110, 200 # overhead view crop
+            elif 'ldoor' in self.task_id  or 'rdoor' in self.task_id:
+                #left, right, top, bottom = 65, 195, 25, 100
+                left, right, top, bottom = 5, 135, 5, 80
+            elif 'knob' in self.task_id:
+                left, right, top, bottom = 90, 205, 80, 200
+            elif 'sdoor' in self.task_id:
+                #left, right, top, bottom = 180, 256, 30, 110
+                left, right, top, bottom = 130, 245, 5, 80
+            else:
+                left, right, top, bottom = 5, 251, 5, 241
+        elif 'micro' in self.task_id:
+            if view_point == 'eye_level1':
+                left, right, top, bottom = 0, 120, 140, 248 # eye-level view crop
+            elif view_point == 'eye_level2':
+                left, right, top, bottom = 5, 125, 140, 252 # eye-level view crop
+            elif view_point == 'eye_level3':
+                left, right, top, bottom = 25, 150, 100, 200 # eye-level view crop
+            elif view_point == 'eye_level4':
+                left, right, top, bottom = 25, 160, 120, 248 # eye-level view crop
+            else:
+                left, right, top, bottom = 25, 160, 120, 248 # eye-level view crop
+            #left, right, top, bottom = 5, 110, 110, 200 # overhead view crop
+        elif 'ldoor' in self.task_id  or 'rdoor' in self.task_id:
+            if view_point == 'eye_level1':
+                left, right, top, bottom = 15, 165, 25, 100
+            elif view_point == 'eye_level2':
+                left, right, top, bottom = 25, 165, 25, 100
+            elif view_point == 'eye_level3':
+                left, right, top, bottom = 55, 200, 0, 60
+            elif view_point == 'eye_level4':
+                left, right, top, bottom = 50, 200, 25, 90
+            else:
+                left, right, top, bottom = 55, 195, 25, 105
+            #left, right, top, bottom = 5, 135, 5, 80
+        #elif 'knob' in self.task_id:
+        #    left, right, top, bottom = 90, 205, 80, 200
+        elif 'sdoor' in self.task_id:
+            if view_point == 'overhead1':
+                left, right, top, bottom = 130, 250, 0, 50
+            elif view_point == 'overhead2':
+                left, right, top, bottom = 130, 250, 20, 100
+            elif view_point == 'overhead3':
+                left, right, top, bottom = 120, 245, 5, 80
+            elif view_point == 'overhead4':
+                left, right, top, bottom = 130, 245, 5, 80
+            else:
+                left, right, top, bottom = 135, 255, 5, 80
         else:
-            left = 65
-            right = 195
-            top = 15 
-            bottom = 138'''
-        
+            left, right, top, bottom = 5, 251, 5, 241
         im1 = im.crop((left, top, right, bottom))
 
         return im1
-    
 
 
 
@@ -226,8 +304,10 @@ class KitchenBase(env_base.MujocoEnv):
 
         self.init_qpos = self.sim.model.key_qpos[0].copy()
 
-
-        #self.deep_visual_reward_function = DeepFeatureSimilarityRewardFunction()
+        print(config_path)
+        site_id = self.sim.model.site_id2name(self.interact_sid)
+        self.deep_visual_reward_function = DeepFeatureSimilarityRewardFunction(site_id)
+        print('init')
 
     
 
@@ -253,13 +333,13 @@ class KitchenBase(env_base.MujocoEnv):
 
 
     def get_reward_dict(self, obs_dict):
-        
+        site_id = self.sim.model.site_id2name(self.interact_sid)
         try:
             visual_img = self.sim.render(width=256, height=256, depth=False, camera_name="overhead")
             img = Image.fromarray(cv2.flip(visual_img,0))
             visual_r = self.deep_visual_reward_function.eval_img(img)
         except Exception:
-            self.deep_visual_reward_function = DeepFeatureSimilarityRewardFunction()
+            self.deep_visual_reward_function = DeepFeatureSimilarityRewardFunction(site_id)
             visual_img = self.sim.render(width=256, height=256, depth=False, camera_name="overhead")
             img = Image.fromarray(cv2.flip(visual_img,0))
             visual_r = self.deep_visual_reward_function.eval_img(img)
