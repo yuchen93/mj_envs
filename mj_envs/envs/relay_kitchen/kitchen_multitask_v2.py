@@ -18,8 +18,8 @@ import clip
 VIZ = False
 device = "cuda" if torch.cuda.is_available() else "cpu"
 DEMO_MODE = 'microwave' #'cabinet' #
-BASE_DIR = '/Users/yuchencui/Projects/active_learning/'
-#BASE_DIR = '/private/home/yuchencui/projects/active_learning/'
+#BASE_DIR = '/Users/yuchencui/Projects/active_learning/'
+BASE_DIR = '/private/home/yuchencui/projects/active_learning/'
 
 class DeepFeatureSimilarityRewardFunction(object):
     def __init__(self, task_id ,mode ='clip') -> None:
@@ -51,6 +51,7 @@ class DeepFeatureSimilarityRewardFunction(object):
             self.view_points = ['counter_top', 'counter_top1', 'counter_top2', 'counter_top3', 'counter_top4']
         else:
             self.view_points = ['overhead', 'overhead1', 'overhead2', 'overhead3', 'overhead4']
+        #print(task_id, self.task_id, self.view_points)
 
         
         if mode == 'clip': 
@@ -99,10 +100,10 @@ class DeepFeatureSimilarityRewardFunction(object):
                 sim = torch.nn.functional.cosine_similarity(g_img.unsqueeze(0),i_img.unsqueeze(0)).cpu()
                 if sim > highest_similarity:
                     highest_similarity = sim
-                    mll_delta_feature = g_img.numpy() - i_img.numpy()
+                    mll_delta_feature = g_img - i_img
             delta_img_features.append(mll_delta_feature)
 
-        self.delta_img_features = torch.mean(torch.tensor(delta_img_features), 0, True).to(device)
+        self.delta_img_features = torch.mean(torch.stack(delta_img_features), 0, True).to(device)
 
 
 
@@ -117,7 +118,11 @@ class DeepFeatureSimilarityRewardFunction(object):
     def eval_imgs(self, ims):
         processed_imgs = []
         for im_i in range(len(ims)):
-            processed_imgs.append(self.preprocess(self.crop_img(ims[im_i],view_point=self.viewpoints[im_i])))
+            img = self.crop_img(ims[im_i],view_point=self.view_points[im_i])
+            print('saving img',self.view_points[im_i])
+            img.save('debug_'+str(im_i)+'.png')
+            processed_imgs.append(self.preprocess(img))
+            
         ims = torch.stack(processed_imgs).to(device)
         if self.mode == 'clip': img_feature = self.model.encode_image(ims) - self.base_features
         else: img_feature = self.model(ims) - self.base_features
@@ -196,10 +201,10 @@ class KitchenBase(env_base.MujocoEnv):
         "approach_err": 1.0,
     }
     DEFAULT_RWD_KEYS_AND_WEIGHTS = {
-        "goal": 5.0,
+        "goal": 20.0,
         "bonus": 0.0, #0.5,
         "pose": 0.0, #0.01,
-        "approach": 0.0, #0.5,
+        "approach": 0.5, #0.5,
     }
     '''
     "goal": 1.0,
@@ -305,10 +310,12 @@ class KitchenBase(env_base.MujocoEnv):
 
         self.init_qpos = self.sim.model.key_qpos[0].copy()
 
-        print(config_path)
+        #print(config_path)
         site_id = self.sim.model.site_id2name(self.interact_sid)
-        #self.deep_visual_reward_function = DeepFeatureSimilarityRewardFunction(site_id)
-        print('init')
+        self.deep_visual_reward_function = DeepFeatureSimilarityRewardFunction(site_id)
+        self.similarities = []
+        #print('init')
+
 
     
 
@@ -334,20 +341,34 @@ class KitchenBase(env_base.MujocoEnv):
 
 
     def get_reward_dict(self, obs_dict):
-        '''
+        
         site_id = self.sim.model.site_id2name(self.interact_sid)
         try:
-            visual_img = self.sim.render(width=256, height=256, depth=False, camera_name="overhead")
-            img = Image.fromarray(cv2.flip(visual_img,0))
-            visual_r = self.deep_visual_reward_function.eval_img(img)
-        except Exception:
+            imgs = []
+            for viewpoint in self.deep_visual_reward_function.view_points:
+                visual_img = self.sim.render(width=256, height=256, depth=False, camera_name=viewpoint)
+                img = Image.fromarray(cv2.flip(visual_img,0))
+                imgs.append(img)
+        except Exception as e:
             self.deep_visual_reward_function = DeepFeatureSimilarityRewardFunction(site_id)
-            visual_img = self.sim.render(width=256, height=256, depth=False, camera_name="overhead")
-            img = Image.fromarray(cv2.flip(visual_img,0))
-            visual_r = self.deep_visual_reward_function.eval_img(img)
-        '''
+            self.similarities = []
+            imgs = []
+            for viewpoint in self.deep_visual_reward_function.view_points:
+                visual_img = self.sim.render(width=256, height=256, depth=False, camera_name=viewpoint)
+                img = Image.fromarray(cv2.flip(visual_img,0))
+                imgs.append(img)
+        v_r = self.deep_visual_reward_function.eval_imgs(imgs)
+        self.similarities.append(v_r)
+        if(len(self.similarities)) == 1: self.base_vr = v_r
+        else: 
+            if v_r < self.base_vr: v_r = self.base_vr
+        if len(self.similarities) > 3: del self.similarities[0]
+        visual_r = np.mean(self.similarities)
+
 
         goal_dist = np.abs(obs_dict['goal_err'])
+        #dense_r = -0.5*np.linalg.norm(obs_dict['approach_err'], axis=-1) -np.sum(goal_dist, axis=-1)
+        #print('visual reward: ',visual_r, 'dense reward:', dense_r)
 
         rwd_dict = collections.OrderedDict((
             # Optional Keys
