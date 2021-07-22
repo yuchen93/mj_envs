@@ -40,7 +40,8 @@ class DeepFeatureSimilarityRewardFunction(object):
             "light_site": "kitchen_light_on-v3",
             "microhandle_site" : "kitchen_micro_open-v3",
             "rightdoor_site" : "kitchen_rdoor_open-v3",
-            "slide_site" : "kitchen_sdoor_open-v3"  
+            "slide_site" : "kitchen_sdoor_open-v3" , 
+            "end_effector" : "kitchen-v3"
          }
 
         self.task_id = env_site_dict[task_id]
@@ -51,7 +52,7 @@ class DeepFeatureSimilarityRewardFunction(object):
         else:
             self.view_points = ['overhead', 'overhead1', 'overhead2', 'overhead3', 'overhead4']
 
-
+        
         if mode == 'clip': 
             self.model, self.preprocess = clip.load("ViT-B/32", device=device)
         else: 
@@ -306,7 +307,7 @@ class KitchenBase(env_base.MujocoEnv):
 
         print(config_path)
         site_id = self.sim.model.site_id2name(self.interact_sid)
-        self.deep_visual_reward_function = DeepFeatureSimilarityRewardFunction(site_id)
+        #self.deep_visual_reward_function = DeepFeatureSimilarityRewardFunction(site_id)
         print('init')
 
     
@@ -333,6 +334,7 @@ class KitchenBase(env_base.MujocoEnv):
 
 
     def get_reward_dict(self, obs_dict):
+        '''
         site_id = self.sim.model.site_id2name(self.interact_sid)
         try:
             visual_img = self.sim.render(width=256, height=256, depth=False, camera_name="overhead")
@@ -343,18 +345,18 @@ class KitchenBase(env_base.MujocoEnv):
             visual_img = self.sim.render(width=256, height=256, depth=False, camera_name="overhead")
             img = Image.fromarray(cv2.flip(visual_img,0))
             visual_r = self.deep_visual_reward_function.eval_img(img)
-        
+        '''
 
         goal_dist = np.abs(obs_dict['goal_err'])
 
         rwd_dict = collections.OrderedDict((
             # Optional Keys
-            ('goal',    visual_r), #-np.sum(goal_dist, axis=-1)), # visual_r), #
+            ('goal',    -np.sum(goal_dist, axis=-1)), # visual_r), #visual_r), #
             ('bonus',   np.product(goal_dist < 0.75*self.obj['dof_ranges'], axis=-1) + np.product(goal_dist < 0.25*self.obj['dof_ranges'], axis=-1)),
             ('pose',    -np.sum(np.abs(obs_dict['pose_err']), axis=-1)),
             ('approach',-np.linalg.norm(obs_dict['approach_err'], axis=-1)),
             # Must keys
-            ('sparse',  visual_r), #-np.sum(goal_dist, axis=-1)), #visual_r ), #
+            ('sparse',  -np.sum(goal_dist, axis=-1)), #visual_r ), #visual_r), #
             ('solved',  np.all(goal_dist < 0.15*self.obj['dof_ranges'])),
             ('done',    False),
         ))
