@@ -201,7 +201,7 @@ class KitchenBase(env_base.MujocoEnv):
         "approach_err": 1.0,
     }
     DEFAULT_RWD_KEYS_AND_WEIGHTS = {
-        "goal": 20.0,
+        "goal": 1.0,
         "bonus": 0.0, #0.5,
         "pose": 0.0, #0.01,
         "approach": 0.5, #0.5,
@@ -312,7 +312,7 @@ class KitchenBase(env_base.MujocoEnv):
 
         #print(config_path)
         site_id = self.sim.model.site_id2name(self.interact_sid)
-        self.deep_visual_reward_function = DeepFeatureSimilarityRewardFunction(site_id)
+        #self.deep_visual_reward_function = DeepFeatureSimilarityRewardFunction(site_id)
         self.similarities = []
         #print('init')
 
@@ -341,7 +341,7 @@ class KitchenBase(env_base.MujocoEnv):
 
 
     def get_reward_dict(self, obs_dict):
-        
+        '''
         site_id = self.sim.model.site_id2name(self.interact_sid)
         try:
             imgs = []
@@ -364,7 +364,7 @@ class KitchenBase(env_base.MujocoEnv):
             if v_r < self.base_vr: v_r = self.base_vr
         if len(self.similarities) > 3: del self.similarities[0]
         visual_r = np.mean(self.similarities)
-
+        '''
 
         goal_dist = np.abs(obs_dict['goal_err'])
         #dense_r = -0.5*np.linalg.norm(obs_dict['approach_err'], axis=-1) -np.sum(goal_dist, axis=-1)

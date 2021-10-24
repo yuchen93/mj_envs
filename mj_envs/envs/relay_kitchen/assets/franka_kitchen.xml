@@ -71,7 +71,7 @@
 
         <!-- Robot -->
         <body pos='0. 0 1.8' euler='0 0 1.57'>
-            <geom rgba="0 0 0 0" type='cylinder' size='.120 .90' pos='-.04 0 -0.90' class='panda_viz'/>
+            <geom rgba='0 0 0 0' type='cylinder' size='.120 .90' pos='-.04 0 -0.90' class='panda_viz'/>
             <include file="../../../sims/franka_sim/assets/chain0.xml"/>
         </body>
 
