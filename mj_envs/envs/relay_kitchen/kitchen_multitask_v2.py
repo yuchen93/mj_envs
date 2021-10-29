@@ -12,6 +12,7 @@ import torchvision.models as models
 from torchvision import transforms
 import numpy as np
 import cv2
+import random
 
 import clip
 
@@ -30,6 +31,7 @@ class DeepFeatureSimilarityRewardFunction(object):
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ])
+
         
         env_site_dict = {
             "knob1_site" : "kitchen_knob1_on-v3",
@@ -53,11 +55,14 @@ class DeepFeatureSimilarityRewardFunction(object):
         #print(task_id, self.task_id, self.view_points)
 
 
-        if mode == 'clip': 
-            self.model, self.preprocess = clip.load("ViT-B/32", device=device)
-        else: 
-            self.model = models.resnet152(pretrained=True)
-            self.model = self.model.to(device)
+        self.debug_ct = 0
+
+        with torch.no_grad():
+            if mode == 'clip': 
+                self.model, self.preprocess = clip.load("ViT-B/32", device=device)
+            else: 
+                self.model = models.resnet152(pretrained=True)
+                self.model = self.model.to(device)
         
         self.mode = mode
         modules=list(self.model.children())[:-1]
@@ -69,24 +74,29 @@ class DeepFeatureSimilarityRewardFunction(object):
 
         data_dir = BASE_DIR + 'online_imgs/kitchen_micro_open-v3/'
 
-        goal_img_paths = [os.path.join(data_dir+'/goal', f) for f in os.listdir(data_dir+'/goal') if f.endswith('.jpg') or f.endswith('.jpeg') or f.endswith('.png')] 
-        init_img_paths = [os.path.join(data_dir+'/init', f) for f in os.listdir(data_dir+'/init') if f.endswith('.jpg') or f.endswith('.jpeg') or f.endswith('.png')] 
+        goal_img_paths = [os.path.join(data_dir+'/goal', f) for f in os.listdir(data_dir+'/goal') if f.endswith('.jpg') or f.endswith('.jpeg') or f.endswith('.png') or f.endswith('.JPG') or f.endswith('.webp')] 
+        init_img_paths = [os.path.join(data_dir+'/init', f) for f in os.listdir(data_dir+'/init') if f.endswith('.jpg') or f.endswith('.jpeg') or f.endswith('.png') or f.endswith('.JPG') or f.endswith('.webp')] 
+
+        if len(goal_img_paths) > 25: goal_img_paths = random.sample(goal_img_paths,25)
+        if len(init_img_paths) > 25: init_img_paths = random.sample(init_img_paths,25)
 
         goal_imgs = torch.stack([self.preprocess(Image.open(f)).to(device) for f in goal_img_paths])
         init_imgs = torch.stack([self.preprocess(Image.open(f)).to(device) for f in init_img_paths])
 
         base_img_dir = BASE_DIR + "/base_imgs/"
-        base_images = [self.preprocess(self.crop_img(Image.open(base_img_dir+env_site_dict[task_id]+'/'+viewpoint+'/base_img.png'),view_point=viewpoint)) for viewpoint in self.view_points]
-        
-        base_image_tensor = torch.stack(base_images).to(device)
+        self.base_imgs = None  #[self.crop_img(Image.open(base_img_dir+env_site_dict[task_id]+'/'+viewpoint+'/base_img.png'),view_point=viewpoint) for viewpoint in self.view_points]
+        #base_images = [self.preprocess(self.crop_img(Image.open(base_img_dir+env_site_dict[task_id]+'/'+viewpoint+'/base_img.png'),view_point=viewpoint)) for viewpoint in self.view_points]
+        #base_image_tensor = torch.stack(base_images).to(device)
+
         if self.mode == 'clip':
             goal_img_features = self.model.encode_image(goal_imgs)
             init_img_features = self.model.encode_image(init_imgs) 
-            self.base_features = self.model.encode_image(base_image_tensor)
+            #self.base_features = self.model.encode_image(base_image_tensor)
         else:
             goal_img_features = self.model(goal_imgs)
             init_img_features = self.model(init_imgs)
-            self.base_features = self.model(base_image_tensor)
+            #self.base_features = self.model(base_image_tensor)
+        self.base_features = None
 
         #avg_init = torch.mean(init_img_features, axis=0)
         #self.delta_img_features = goal_img_features - avg_init.unsqueeze(0)
@@ -99,10 +109,10 @@ class DeepFeatureSimilarityRewardFunction(object):
                 sim = torch.nn.functional.cosine_similarity(g_img.unsqueeze(0),i_img.unsqueeze(0)).cpu()
                 if sim > highest_similarity:
                     highest_similarity = sim
-                    mll_delta_feature = g_img - i_img
+                    mll_delta_feature = g_img.cpu().numpy() - i_img.cpu().numpy()
             delta_img_features.append(mll_delta_feature)
 
-        self.delta_img_features = torch.mean(torch.stack(delta_img_features), 0, True).to(device)
+        self.delta_img_features = torch.tensor(delta_img_features).to(device)
 
 
 
@@ -116,17 +126,34 @@ class DeepFeatureSimilarityRewardFunction(object):
 
     def eval_imgs(self, ims):
         processed_imgs = []
+        self.debug_ct += 1
         for im_i in range(len(ims)):
             img = self.crop_img(ims[im_i],view_point=self.view_points[im_i])
-            print('saving img',self.view_points[im_i])
-            img.save('debug_'+str(im_i)+'.png')
+            #print('saving img',self.view_points[im_i])
+            '''
+            delta_img = Image.fromarray(np.array(img) - np.array(self.base_imgs[im_i]))
+            if np.sum(delta_img)>0:
+                img_path = "/private/home/yuchencui/projects/active_learning/franka_baselines/imgs/debug_delta_"+str(self.view_points[im_i])+'_'+str(self.debug_ct)+".png"
+                delta_img.save(img_path)
+            '''
             processed_imgs.append(self.preprocess(img))
             
         ims = torch.stack(processed_imgs).to(device)
         if self.mode == 'clip': img_feature = self.model.encode_image(ims) - self.base_features
         else: img_feature = self.model(ims) - self.base_features
         ## average over each viewpoint, compute feature similarity avg delta feature
-        similarity = np.mean(torch.nn.functional.cosine_similarity(img_feature,self.delta_img_features).cpu().numpy())
+        all_similarities = []
+        for im_i in range(len(ims)):
+            if torch.norm(img_feature[im_i,:]) > 0.09:
+                #print(im_i, torch.norm(img_feature[im_i,:]))
+                similarities = torch.nn.functional.cosine_similarity(img_feature[im_i,:].unsqueeze(0), self.delta_img_features)
+                similarity = np.mean(similarities.cpu().numpy())
+                if similarity > 0.02: all_similarities.append(similarity)
+                else: all_similarities.append(0.0)
+            else:
+                all_similarities.append(0.0)
+        #print(self.debug_ct, all_similarities)
+        similarity = np.mean(all_similarities)
         return similarity
 
 
@@ -200,10 +227,10 @@ class KitchenBase(env_base.MujocoEnv):
         "approach_err": 1.0,
     }
     DEFAULT_RWD_KEYS_AND_WEIGHTS = {
-        "goal": 20.0,
+        "goal": 5.0,
         "bonus": 0.0, #0.5,
         "pose": 0.0, #0.01,
-        "approach": 0.5, #0.5,
+        "approach": 0.1, #0.5,
     }
     '''
     "goal": 1.0,
@@ -313,6 +340,19 @@ class KitchenBase(env_base.MujocoEnv):
         site_id = self.sim.model.site_id2name(self.interact_sid)
         self.deep_visual_reward_function = DeepFeatureSimilarityRewardFunction(site_id)
         self.similarities = []
+        if self.deep_visual_reward_function.base_imgs is None:
+            imgs = []
+            for viewpoint in self.deep_visual_reward_function.view_points:
+                visual_img = self.sim.render(width=256, height=256, depth=False, camera_name=viewpoint)
+                img = Image.fromarray(cv2.flip(visual_img,0))
+                imgs.append(img)
+            base_images = [self.deep_visual_reward_function.preprocess(self.deep_visual_reward_function.crop_img(imgs[i],view_point=self.deep_visual_reward_function.view_points[i])) for i in range(len(imgs))]
+            self.deep_visual_reward_function.base_imgs = [self.deep_visual_reward_function.crop_img(imgs[i],view_point=self.deep_visual_reward_function.view_points[i]) for i in range(len(imgs))]
+            base_image_tensor = torch.stack(base_images).to(device)
+            if self.deep_visual_reward_function.mode == 'clip':
+                self.deep_visual_reward_function.base_features = self.deep_visual_reward_function.model.encode_image(base_image_tensor)
+            else:
+                self.deep_visual_reward_function.base_features = self.deep_visual_reward_function.model(base_image_tensor)
         #print('init')
 
     
@@ -347,6 +387,7 @@ class KitchenBase(env_base.MujocoEnv):
                 img = Image.fromarray(cv2.flip(visual_img,0))
                 imgs.append(img)
         except Exception as e:
+            print('initializing sim detector')
             self.deep_visual_reward_function = DeepFeatureSimilarityRewardFunction(site_id)
             self.similarities = []
             imgs = []
@@ -354,27 +395,48 @@ class KitchenBase(env_base.MujocoEnv):
                 visual_img = self.sim.render(width=256, height=256, depth=False, camera_name=viewpoint)
                 img = Image.fromarray(cv2.flip(visual_img,0))
                 imgs.append(img)
+
+        if self.deep_visual_reward_function.base_imgs is None:
+            print('initializing base images')
+            base_images = [self.deep_visual_reward_function.preprocess(self.deep_visual_reward_function.crop_img(imgs[i],view_point=self.deep_visual_reward_function.view_points[i])) for i in range(len(imgs))]
+            self.deep_visual_reward_function.base_imgs = [self.deep_visual_reward_function.crop_img(imgs[i],view_point=self.deep_visual_reward_function.view_points[i]) for i in range(len(imgs))]
+            base_image_tensor = torch.stack(base_images).to(device)
+            if self.deep_visual_reward_function.mode == 'clip':
+                self.deep_visual_reward_function.base_features = self.deep_visual_reward_function.model.encode_image(base_image_tensor)
+            else:
+                self.deep_visual_reward_function.base_features = self.deep_visual_reward_function.model(base_image_tensor)
+            im_i = 0
+            for img in imgs:
+                img.save('/private/home/yuchencui/projects/active_learning/franka_baselines/imgs/debug_base_'+self.deep_visual_reward_function.view_points[im_i]+'.png')
+                im_i += 1
+
         v_r = self.deep_visual_reward_function.eval_imgs(imgs)
         self.similarities.append(v_r)
-        if(len(self.similarities)) == 1: self.base_vr = v_r
-        else: 
-            if v_r < self.base_vr: v_r = self.base_vr
         if len(self.similarities) > 3: del self.similarities[0]
         visual_r = np.mean(self.similarities)
-        
+        if visual_r < 0.022: visual_r = 0.0
+        visual_r *= 10.0
 
         goal_dist = np.abs(obs_dict['goal_err'])
-        #dense_r = -0.5*np.linalg.norm(obs_dict['approach_err'], axis=-1) -np.sum(goal_dist, axis=-1)
-        #print('visual reward: ',visual_r, 'dense reward:', dense_r)
+        dense_r = -np.sum(goal_dist, axis=-1)
+        if visual_r > 0:
+            print('visual reward: ',visual_r, 'goal reward:', dense_r, 'approach:', -0.1*np.linalg.norm(obs_dict['approach_err'], axis=-1))
+            im_i = 0
+            for img in imgs:
+                img.save('/private/home/yuchencui/projects/active_learning/franka_baselines/imgs/debug_pos_sim_'+self.deep_visual_reward_function.view_points[im_i]+'.png')
+                im_i += 1
+
+        visual_r = np.array([[visual_r]])
 
         rwd_dict = collections.OrderedDict((
             # Optional Keys
-            ('goal',    visual_r), #-np.sum(goal_dist, axis=-1)), # visual_r), #
+            #('goal',    -np.sum(goal_dist, axis=-1)), # visual_r), #
+            ('goal',    visual_r), #
             ('bonus',   np.product(goal_dist < 0.75*self.obj['dof_ranges'], axis=-1) + np.product(goal_dist < 0.25*self.obj['dof_ranges'], axis=-1)),
             ('pose',    -np.sum(np.abs(obs_dict['pose_err']), axis=-1)),
             ('approach',-np.linalg.norm(obs_dict['approach_err'], axis=-1)),
             # Must keys
-            ('sparse',  visual_r), #-np.sum(goal_dist, axis=-1)), #visual_r ), #
+            ('sparse',  visual_r), #
             ('solved',  np.all(goal_dist < 0.15*self.obj['dof_ranges'])),
             ('done',    False),
         ))
