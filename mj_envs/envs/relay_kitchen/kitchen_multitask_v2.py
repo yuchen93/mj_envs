@@ -6,31 +6,56 @@ import os
 import collections
 
 
+
 import torch
+import torch.nn as nn
+
 from PIL import Image
 import torchvision.models as models
 from torchvision import transforms
 import numpy as np
 import cv2
 
-import clip
+#import clip
 
 VIZ = False
 device = "cuda" if torch.cuda.is_available() else "cpu"
-DEMO_MODE = 'microwave' #'cabinet' #
-#BASE_DIR = '/Users/yuchencui/Projects/active_learning/'
-BASE_DIR = '/private/home/yuchencui/projects/active_learning/'
 
-class DeepFeatureSimilarityRewardFunction(object):
-    def __init__(self, task_id ,mode ='clip') -> None:
+
+REWARD_DIR = '/home/yuchen/projects/fb_project/goal_conditioned_learning/trex_data/'
+
+    
+activation = nn.LeakyReLU
+
+class RewardNet(nn.Module):
+    def __init__(self, input_dim=72, hidden_dim=256, num_layers=2):
+        super(RewardNet, self).__init__()
+        self.input_dim = input_dim
+        last_dim = self.input_dim
+        layer_list = []
+        for i in range(num_layers):
+            layer_list.append(nn.Linear(last_dim, hidden_dim))
+            layer_list.append(activation())
+            last_dim = hidden_dim
+        layer_list.append(nn.Linear(hidden_dim, 1))
+        self.net = nn.Sequential(*layer_list)
+
+
+    def forward(self, x):
+        return self.net(x)
+
+    def compute_reward(self, x):
+        with torch.no_grad():
+            x = torch.Tensor(x).float()
+            if len(x.size()) == 1:
+                x = x.view(1, -1)
+            reward = self.net(x)
+        return reward.item()   
+
+
+class TrexRewardFunction(object):
+    def __init__(self, site_id ,mode ='clip') -> None:
         super().__init__()
-        self.preprocess = transforms.Compose([
-            transforms.Resize(256),
-            transforms.CenterCrop(224),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-        ])
-        
         env_site_dict = {
             "knob1_site" : "kitchen_knob1_on-v3",
             "knob2_site" : "kitchen_knob2_on-v3",
@@ -44,153 +69,17 @@ class DeepFeatureSimilarityRewardFunction(object):
             "end_effector" : "kitchen-v3"
          }
 
-        self.task_id = env_site_dict[task_id]
-        if 'micro' in task_id or 'leftdoor' in task_id or 'rightdoor' in task_id:
-            self.view_points = ['eye_level', 'eye_level1', 'eye_level2', 'eye_level3', 'eye_level4']
-        elif 'knob' in task_id or 'light' in task_id:
-            self.view_points = ['counter_top', 'counter_top1', 'counter_top2', 'counter_top3', 'counter_top4']
-        else:
-            self.view_points = ['overhead', 'overhead1', 'overhead2', 'overhead3', 'overhead4']
-        #print(task_id, self.task_id, self.view_points)
-
+        self.task_id = env_site_dict[site_id]
+        self.r_net = RewardNet().float()
+        self.r_net.load_state_dict(torch.load(REWARD_DIR+self.task_id+'_'+mode+'.pkl'))
+        self.r_net.eval()
         
-        if mode == 'clip': 
-            self.model, self.preprocess = clip.load("ViT-B/32", device=device)
-        else: 
-            self.model = models.resnet152(pretrained=True)
-            self.model = self.model.to(device)
+    def eval_state(self, state):
+        with torch.no_grad():
+            state = torch.tensor(state).float()
+            reward = self.r_net(state).numpy()
+        return reward
         
-        self.mode = mode
-        modules=list(self.model.children())[:-1]
-        self.modelmodel=torch.nn.Sequential(*modules)
-        for p in self.model.parameters():
-            p.requires_grad = False
-            
-        self.model.eval()
-
-        data_dir = BASE_DIR + 'online_imgs/kitchen_micro_open-v3/'
-
-        goal_img_paths = [os.path.join(data_dir+'/goal', f) for f in os.listdir(data_dir+'/goal') if f.endswith('.jpg') or f.endswith('.jpeg') or f.endswith('.png')] 
-        init_img_paths = [os.path.join(data_dir+'/init', f) for f in os.listdir(data_dir+'/init') if f.endswith('.jpg') or f.endswith('.jpeg') or f.endswith('.png')] 
-
-        goal_imgs = torch.stack([self.preprocess(Image.open(f)).to(device) for f in goal_img_paths])
-        init_imgs = torch.stack([self.preprocess(Image.open(f)).to(device) for f in init_img_paths])
-
-        base_img_dir = BASE_DIR + "/base_imgs/"
-        base_images = [self.preprocess(self.crop_img(Image.open(base_img_dir+env_site_dict[task_id]+'/'+viewpoint+'/base_img.png'),view_point=viewpoint)) for viewpoint in self.view_points]
-        
-        base_image_tensor = torch.stack(base_images).to(device)
-        if self.mode == 'clip':
-            goal_img_features = self.model.encode_image(goal_imgs)
-            init_img_features = self.model.encode_image(init_imgs) 
-            self.base_features = self.model.encode_image(base_image_tensor)
-        else:
-            goal_img_features = self.model(goal_imgs)
-            init_img_features = self.model(init_imgs)
-            self.base_features = self.model(base_image_tensor)
-
-        #avg_init = torch.mean(init_img_features, axis=0)
-        #self.delta_img_features = goal_img_features - avg_init.unsqueeze(0)
-
-        delta_img_features = []
-        for g_img in goal_img_features:
-            highest_similarity = - np.inf
-            mll_delta_feature = None
-            for i_img in init_img_features:
-                sim = torch.nn.functional.cosine_similarity(g_img.unsqueeze(0),i_img.unsqueeze(0)).cpu()
-                if sim > highest_similarity:
-                    highest_similarity = sim
-                    mll_delta_feature = g_img - i_img
-            delta_img_features.append(mll_delta_feature)
-
-        self.delta_img_features = torch.mean(torch.stack(delta_img_features), 0, True).to(device)
-
-
-
-    def eval_img(self, im):
-        im = self.preprocess(self.crop_img(im)).unsqueeze(0).to(device)
-        if self.mode == 'clip': img_feature = self.model.encode_image(im) - self.base_features[0]
-        else: img_feature = self.model(im) - self.base_features[0]
-        similarity = np.mean(torch.nn.functional.cosine_similarity(img_feature,self.delta_img_features).cpu().numpy())
-        return similarity
-
-
-    def eval_imgs(self, ims):
-        processed_imgs = []
-        for im_i in range(len(ims)):
-            img = self.crop_img(ims[im_i],view_point=self.view_points[im_i])
-            print('saving img',self.view_points[im_i])
-            img.save('debug_'+str(im_i)+'.png')
-            processed_imgs.append(self.preprocess(img))
-            
-        ims = torch.stack(processed_imgs).to(device)
-        if self.mode == 'clip': img_feature = self.model.encode_image(ims) - self.base_features
-        else: img_feature = self.model(ims) - self.base_features
-        ## average over each viewpoint, compute feature similarity avg delta feature
-        similarity = np.mean(torch.nn.functional.cosine_similarity(img_feature,self.delta_img_features).cpu().numpy())
-        return similarity
-
-
-    def crop_img(self, im, view_point):
-        if view_point is None:
-            if 'micro' in self.task_id:
-                #left, right, top, bottom = 25, 150, 120, 248 # eye-level view crop
-                left, right, top, bottom = 5, 110, 110, 200 # overhead view crop
-            elif 'ldoor' in self.task_id  or 'rdoor' in self.task_id:
-                #left, right, top, bottom = 65, 195, 25, 100
-                left, right, top, bottom = 5, 135, 5, 80
-            elif 'knob' in self.task_id:
-                left, right, top, bottom = 90, 205, 80, 200
-            elif 'sdoor' in self.task_id:
-                #left, right, top, bottom = 180, 256, 30, 110
-                left, right, top, bottom = 130, 245, 5, 80
-            else:
-                left, right, top, bottom = 5, 251, 5, 241
-        elif 'micro' in self.task_id:
-            if view_point == 'eye_level1':
-                left, right, top, bottom = 0, 120, 140, 248 # eye-level view crop
-            elif view_point == 'eye_level2':
-                left, right, top, bottom = 5, 125, 140, 252 # eye-level view crop
-            elif view_point == 'eye_level3':
-                left, right, top, bottom = 25, 150, 100, 200 # eye-level view crop
-            elif view_point == 'eye_level4':
-                left, right, top, bottom = 25, 160, 120, 248 # eye-level view crop
-            else:
-                left, right, top, bottom = 25, 160, 120, 248 # eye-level view crop
-            #left, right, top, bottom = 5, 110, 110, 200 # overhead view crop
-        elif 'ldoor' in self.task_id  or 'rdoor' in self.task_id:
-            if view_point == 'eye_level1':
-                left, right, top, bottom = 15, 165, 25, 100
-            elif view_point == 'eye_level2':
-                left, right, top, bottom = 25, 165, 25, 100
-            elif view_point == 'eye_level3':
-                left, right, top, bottom = 55, 200, 0, 60
-            elif view_point == 'eye_level4':
-                left, right, top, bottom = 50, 200, 25, 90
-            else:
-                left, right, top, bottom = 55, 195, 25, 105
-            #left, right, top, bottom = 5, 135, 5, 80
-        #elif 'knob' in self.task_id:
-        #    left, right, top, bottom = 90, 205, 80, 200
-        elif 'sdoor' in self.task_id:
-            if view_point == 'overhead1':
-                left, right, top, bottom = 130, 250, 0, 50
-            elif view_point == 'overhead2':
-                left, right, top, bottom = 130, 250, 20, 100
-            elif view_point == 'overhead3':
-                left, right, top, bottom = 120, 245, 5, 80
-            elif view_point == 'overhead4':
-                left, right, top, bottom = 130, 245, 5, 80
-            else:
-                left, right, top, bottom = 135, 255, 5, 80
-        else:
-            left, right, top, bottom = 5, 251, 5, 241
-        im1 = im.crop((left, top, right, bottom))
-
-        return im1
-
-
-
 class KitchenBase(env_base.MujocoEnv):
 
     DEFAULT_OBS_KEYS_AND_WEIGHTS = {
@@ -204,7 +93,7 @@ class KitchenBase(env_base.MujocoEnv):
         "goal": 1.0,
         "bonus": 0.0, #0.5,
         "pose": 0.0, #0.01,
-        "approach": 0.5, #0.5,
+        "approach": 0.0, #0.5,
     }
     '''
     "goal": 1.0,
@@ -312,9 +201,10 @@ class KitchenBase(env_base.MujocoEnv):
 
         #print(config_path)
         site_id = self.sim.model.site_id2name(self.interact_sid)
-        #self.deep_visual_reward_function = DeepFeatureSimilarityRewardFunction(site_id)
-        self.similarities = []
+        #self.similarities = []
         #print('init')
+        
+        self.trex_reward = TrexRewardFunction(site_id)
 
 
     
@@ -341,43 +231,26 @@ class KitchenBase(env_base.MujocoEnv):
 
 
     def get_reward_dict(self, obs_dict):
-        '''
-        site_id = self.sim.model.site_id2name(self.interact_sid)
+        
+        obs = self.get_obs()
+        
         try:
-            imgs = []
-            for viewpoint in self.deep_visual_reward_function.view_points:
-                visual_img = self.sim.render(width=256, height=256, depth=False, camera_name=viewpoint)
-                img = Image.fromarray(cv2.flip(visual_img,0))
-                imgs.append(img)
+            trex_r = self.trex_reward.eval_state(obs)[0]
         except Exception as e:
-            self.deep_visual_reward_function = DeepFeatureSimilarityRewardFunction(site_id)
-            self.similarities = []
-            imgs = []
-            for viewpoint in self.deep_visual_reward_function.view_points:
-                visual_img = self.sim.render(width=256, height=256, depth=False, camera_name=viewpoint)
-                img = Image.fromarray(cv2.flip(visual_img,0))
-                imgs.append(img)
-        v_r = self.deep_visual_reward_function.eval_imgs(imgs)
-        self.similarities.append(v_r)
-        if(len(self.similarities)) == 1: self.base_vr = v_r
-        else: 
-            if v_r < self.base_vr: v_r = self.base_vr
-        if len(self.similarities) > 3: del self.similarities[0]
-        visual_r = np.mean(self.similarities)
-        '''
-
+            site_id = self.sim.model.site_id2name(self.interact_sid)
+            self.trex_reward = TrexRewardFunction(site_id)
+            trex_r = self.trex_reward.eval_state(obs)[0]
+       
         goal_dist = np.abs(obs_dict['goal_err'])
-        #dense_r = -0.5*np.linalg.norm(obs_dict['approach_err'], axis=-1) -np.sum(goal_dist, axis=-1)
-        #print('visual reward: ',visual_r, 'dense reward:', dense_r)
 
         rwd_dict = collections.OrderedDict((
             # Optional Keys
-            ('goal',    -np.sum(goal_dist, axis=-1)), # visual_r), #visual_r), #
+            ('goal',    trex_r), # -np.sum(goal_dist, axis=-1)), 
             ('bonus',   np.product(goal_dist < 0.75*self.obj['dof_ranges'], axis=-1) + np.product(goal_dist < 0.25*self.obj['dof_ranges'], axis=-1)),
             ('pose',    -np.sum(np.abs(obs_dict['pose_err']), axis=-1)),
             ('approach',-np.linalg.norm(obs_dict['approach_err'], axis=-1)),
             # Must keys
-            ('sparse',  -np.sum(goal_dist, axis=-1)), #visual_r ), #visual_r), #
+            ('sparse',  trex_r), #-np.sum(goal_dist, axis=-1)),
             ('solved',  np.all(goal_dist < 0.15*self.obj['dof_ranges'])),
             ('done',    False),
         ))
